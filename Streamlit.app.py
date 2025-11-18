@@ -6,41 +6,33 @@ from datetime import datetime, timedelta
 import requests
 import time
 import hashlib
+import yfinance as yf
 
 # ==================== CONFIGURATION ====================
 
 BENCHMARK_NAME = 'NIFTY 50'
 
 SECTORS_CONFIG = {
-    # (Your existing sectors config from original code here)
-    # For brevity, add sectors dict as in your original code snippet
+    # Add your sector configuration exactly as in your original code
 }
 
-# ==================== USER CACHE KEY FOR PER-USER DATA ====================
+# ==================== USER CACHE KEY ====================
 
 def get_user_cache_key(api_key):
     return hashlib.md5(api_key.encode()).hexdigest()[:8]
 
-# ==================== LOAD BENCHMARK FROM INVESTING.COM UPLOAD ====================
+# ==================== AUTOMATIC NIFTY 50 FETCH VIA YFINANCE ====================
 
-def load_nifty50_from_investing(file=None):
-    if file is None:
-        file = st.file_uploader("Upload Nifty 50 Historical CSV from Investing.com", type=['csv'])
-        if file is None:
-            st.info("Please upload Nifty 50 historical CSV data from Investing.com to proceed")
-            return None
-    try:
-        df = pd.read_csv(file)
-        # Expect columns: Date, Open, High, Low, Close
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.set_index('Date').sort_index()
-        df = df[['Close']].rename(columns={'Close': BENCHMARK_NAME})
-        return df
-    except Exception as e:
-        st.error(f"Failed to load Nifty 50 data: {e}")
-        return None
+@st.cache_data(ttl=3600)
+def fetch_nifty50_yfinance():
+    ticker = '^NSEI'
+    nifty = yf.Ticker(ticker)
+    df = nifty.history(period='2y')
+    df = df[['Close']].rename(columns={'Close': BENCHMARK_NAME})
+    df.index.name = 'Date'
+    return df
 
-# ==================== TWELVE DATA API ====================
+# ==================== TWELVE DATA API FUNCTION ====================
 
 def fetch_twelve_data(symbol, api_key, start_date, end_date, user_key):
     @st.cache_data(ttl=86400, show_spinner=False)
@@ -101,14 +93,12 @@ def fetch_all_twelve_data(api_key, user_key, start_date, end_date):
     all_data = dict()
     failed_symbols = []
 
-    # Fetch sectors
     for sector_key, sector_info in SECTORS_CONFIG.items():
         sector_df = fetch_twelve_data(sector_info['symbol'], api_key, start_date, end_date, user_key)
         if sector_df is not None:
             all_data[sector_key] = sector_df
         else:
             failed_symbols.append(sector_info['name'])
-        # Fetch stocks
         for stock in sector_info['stocks']:
             stock_df = fetch_twelve_data(stock, api_key, start_date, end_date, user_key)
             if stock_df is not None:
@@ -123,7 +113,7 @@ def fetch_all_twelve_data(api_key, user_key, start_date, end_date):
     combined_df = combined_df.sort_index()
     return combined_df
 
-# ==================== RRG CALCULATIONS ====================
+# ==================== RRG METRICS ====================
 
 def calculate_rrg_metrics(data, benchmark=BENCHMARK_NAME, window=26):
     if data is None or benchmark not in data.columns:
@@ -148,37 +138,33 @@ def calculate_rrg_metrics(data, benchmark=BENCHMARK_NAME, window=26):
     rsm_df = pd.DataFrame(rsm_data).dropna()
     return rsr_df, rsm_df
 
-# ==================== STREAMLIT APP ====================
+# ==================== APP MAIN ====================
 
 def main():
-    st.set_page_config(
-        page_title="Indian Market RRG - Hybrid Edition",
-        page_icon="🇮🇳",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    st.title("🇮🇳 Indian Market RRG Analysis - Hybrid Team Edition")
+    st.set_page_config(page_title="Indian Market RRG - Hybrid Auto Fetch", page_icon="🇮🇳", layout="wide")
+    st.title("🇮🇳 Indian Market RRG - Hybrid Automated Benchmark + Twelve Data")
 
-    # Step 1: Load Nifty 50 benchmark from Investing.com CSV
-    nifty_df = load_nifty50_from_investing()
-    if nifty_df is None:
-        return
+    # Step 1: Load Nifty50 from yfinance automatically
+    with st.spinner("Fetching Nifty 50 benchmark data..."):
+        nifty_df = fetch_nifty50_yfinance()
 
-    # Step 2: Get Twelve Data API Key
-    api_key = st.sidebar.text_input("Enter your Twelve Data API Key", type="password")
+    # Step 2: Input Twelve Data API key
+    api_key = st.sidebar.text_input("Enter Twelve Data API Key", type="password")
     if not api_key:
-        st.sidebar.info("Please enter your Twelve Data API key to fetch stocks/sectors data")
+        st.sidebar.info("Please enter Twelve Data API key to fetch stock and sector data")
         return
     user_key = get_user_cache_key(api_key)
 
-    # Step 3: Fetch Twelve Data sector and stock data for last 2 years
+    # Step 3: Fetch Twelve Data equity & sector data - last 2 years
     end_date = datetime.now()
     start_date = end_date - timedelta(days=730)
-    twelve_df = fetch_all_twelve_data(api_key, user_key, start_date, end_date)
+    with st.spinner("Fetching NSE stocks and sector data... This may take a few minutes..."):
+        twelve_df = fetch_all_twelve_data(api_key, user_key, start_date, end_date)
+
     if twelve_df is None:
         return
 
-    # Step 4: Combine benchmark (Nifty 50) and Twelve Data datasets
+    # Step 4: Merge benchmark and Twelve Data data
     combined_df = pd.concat([nifty_df, twelve_df], axis=1, join='outer').sort_index()
     combined_df = combined_df.ffill().bfill()
 
@@ -188,11 +174,10 @@ def main():
         st.error("Failed to calculate RRG metrics.")
         return
 
-    # Step 6: Visualization - reuse your original RRG plot functions (not repeated here for brevity)
-    # Example: fig = create_rrg_plot(rsr_df, rsm_df, list(SECTORS_CONFIG.keys()))
-    # st.plotly_chart(fig, use_container_width=True)
-
-    st.success("Data fetched and RRG metrics calculated successfully! Implement chart rendering here.")
+    # Step 6: Visualization (reuse your original plotting function)
+    st.success("Data fetched successfully! Render your RRG chart below.")
+    # e.g., fig = create_rrg_plot(rsr_df, rsm_df, list(SECTORS_CONFIG.keys()))
+    # st.plotly_chart(fig)
 
 if __name__ == "__main__":
     main()
